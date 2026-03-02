@@ -230,3 +230,112 @@ resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public.id
   route_table_id = aws_route_table.public.id
 }
+
+
+# -------- ECS prerequisites --------
+resource "aws_security_group" "ecs_tasks" {
+  name        = "${var.project_name}-ecs-tasks-${var.region}"
+  description = "ECS tasks egress-only"
+  vpc_id      = aws_vpc.this.id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.project_name}-ecs-tasks-${var.region}"
+  }
+}
+
+resource "aws_ecs_cluster" "this" {
+  name = "${var.project_name}-cluster-${var.region}"
+}
+
+
+resource "aws_cloudwatch_log_group" "ecs" {
+  name              = "/ecs/${var.project_name}-publisher-${var.region}"
+  retention_in_days = 7
+}
+
+data "aws_iam_policy_document" "ecs_task_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ecs_execution_role" {
+  name               = "${var.project_name}-ecs-exec-${var.region}"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_exec_policy" {
+  role       = aws_iam_role.ecs_execution_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# Task role (what the container can do)
+resource "aws_iam_role" "ecs_task_role" {
+  name               = "${var.project_name}-ecs-task-${var.region}"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_assume.json
+}
+
+data "aws_iam_policy_document" "ecs_task_publish" {
+  statement {
+    actions   = ["sns:Publish"]
+    resources = [var.verification_sns_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "ecs_task_publish" {
+  name   = "${var.project_name}-ecs-publish-${var.region}"
+  role   = aws_iam_role.ecs_task_role.id
+  policy = data.aws_iam_policy_document.ecs_task_publish.json
+}
+
+
+resource "aws_ecs_task_definition" "publisher" {
+  family                   = "${var.project_name}-publisher-${var.region}"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 256
+  memory                   = 512
+
+  execution_role_arn = aws_iam_role.ecs_execution_role.arn
+  task_role_arn      = aws_iam_role.ecs_task_role.arn
+
+  container_definitions = jsonencode([
+    {
+      name      = "publisher"
+      image     = "amazon/aws-cli:2.15.0"
+      essential = true
+
+      environment = [
+        { name = "SNS_ARN", value = var.verification_sns_arn },
+        { name = "EMAIL", value = var.email },
+        { name = "REPO_URL", value = var.repo_url },
+        { name = "REGION", value = var.region }
+      ]
+
+      entryPoint = ["sh", "-lc"]
+      command    = [
+        "PAYLOAD=$(printf '{\"email\":\"%s\",\"source\":\"ECS\",\"region\":\"%s\",\"repo\":\"%s\"}' \"$EMAIL\" \"$REGION\" \"$REPO_URL\"); echo $PAYLOAD; aws sns publish --region us-east-1 --topic-arn \"$SNS_ARN\" --message \"$PAYLOAD\"; echo done"
+      ]
+
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.ecs.name
+          awslogs-region        = var.region
+          awslogs-stream-prefix = "ecs"
+        }
+      }
+    }
+  ])
+}
