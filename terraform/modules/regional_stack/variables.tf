@@ -32,3 +32,8 @@ variable "cognito_region" {
   description = "Region where Cognito User Pool lives."
   default     = "us-east-1"
 }
+
+variable "vpc_cidr" {
+  type        = string
+  description = "CIDR block for the regional VPC."
+}

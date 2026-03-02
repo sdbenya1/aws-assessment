@@ -32,6 +32,7 @@ module "regional_us" {
   cognito_user_pool_id        = aws_cognito_user_pool.this.id
   cognito_user_pool_client_id = aws_cognito_user_pool_client.this.id
   cognito_region              = "us-east-1"
+  vpc_cidr                    = "10.10.0.0/16"
 }
 
 module "regional_eu" {
@@ -46,4 +47,5 @@ module "regional_eu" {
   cognito_user_pool_id        = aws_cognito_user_pool.this.id
   cognito_user_pool_client_id = aws_cognito_user_pool_client.this.id
   cognito_region              = "us-east-1"
+  vpc_cidr                    = "10.20.0.0/16"
 }

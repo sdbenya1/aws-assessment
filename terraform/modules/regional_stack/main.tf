@@ -123,7 +123,7 @@ resource "aws_lambda_function" "greeter" {
   }
 }
 
-# -------- API Gateway HTTP API (v2) --------
+# -------- API Gateway HTTP API  --------
 resource "aws_apigatewayv2_api" "http" {
   name          = "${var.project_name}-http-${var.region}"
   protocol_type = "HTTP"
@@ -176,4 +176,57 @@ resource "aws_lambda_permission" "allow_apigw_greet" {
   function_name = aws_lambda_function.greeter.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.http.execution_arn}/*/*"
+}
+
+# -------- Networking --------
+
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+resource "aws_vpc" "this" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = {
+    Name = "${var.project_name}-vpc-${var.region}"
+  }
+}
+
+resource "aws_internet_gateway" "this" {
+  vpc_id = aws_vpc.this.id
+
+  tags = {
+    Name = "${var.project_name}-igw-${var.region}"
+  }
+}
+
+resource "aws_subnet" "public" {
+  vpc_id                  = aws_vpc.this.id
+  cidr_block              = cidrsubnet(var.vpc_cidr, 8, 0)
+  availability_zone       = data.aws_availability_zones.available.names[0]
+  map_public_ip_on_launch = true
+
+  tags = {
+    Name = "${var.project_name}-public-${var.region}"
+  }
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.this.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.this.id
+  }
+
+  tags = {
+    Name = "${var.project_name}-rt-public-${var.region}"
+  }
+}
+
+resource "aws_route_table_association" "public" {
+  subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
 }
