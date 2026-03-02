@@ -11,3 +11,11 @@ output "us_table" {
 output "eu_table" {
   value = module.regional_eu.dynamodb_table_name
 }
+
+output "us_greet_api" {
+  value = module.regional_us.greet_api_url
+}
+
+output "eu_greet_api" {
+  value = module.regional_eu.greet_api_url
+}

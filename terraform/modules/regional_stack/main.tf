@@ -122,3 +122,58 @@ resource "aws_lambda_function" "greeter" {
     }
   }
 }
+
+# -------- API Gateway HTTP API (v2) --------
+resource "aws_apigatewayv2_api" "http" {
+  name          = "${var.project_name}-http-${var.region}"
+  protocol_type = "HTTP"
+}
+
+# JWT Authorizer (Cognito) - centralized in us-east-1
+# issuer = https://cognito-idp.<region>.amazonaws.com/<user_pool_id>
+resource "aws_apigatewayv2_authorizer" "cognito_jwt" {
+  api_id          = aws_apigatewayv2_api.http.id
+  authorizer_type = "JWT"
+  name            = "${var.project_name}-jwt-${var.region}"
+
+  identity_sources = ["$request.header.Authorization"]
+
+  jwt_configuration {
+    audience = [var.cognito_user_pool_client_id]
+    issuer   = "https://cognito-idp.${var.cognito_region}.amazonaws.com/${var.cognito_user_pool_id}"
+  }
+}
+
+# Lambda integration
+resource "aws_apigatewayv2_integration" "greet_lambda" {
+  api_id                 = aws_apigatewayv2_api.http.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.greeter.arn
+  payload_format_version = "2.0"
+}
+
+# Route: POST /greet
+resource "aws_apigatewayv2_route" "greet" {
+  api_id    = aws_apigatewayv2_api.http.id
+  route_key = "POST /greet"
+  target    = "integrations/${aws_apigatewayv2_integration.greet_lambda.id}"
+
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_jwt.id
+}
+
+# Stage (auto-deploy)
+resource "aws_apigatewayv2_stage" "default" {
+  api_id      = aws_apigatewayv2_api.http.id
+  name        = "$default"
+  auto_deploy = true
+}
+
+# Allow API Gateway to invoke Lambda
+resource "aws_lambda_permission" "allow_apigw_greet" {
+  statement_id  = "AllowExecutionFromAPIGatewayGreet-${var.region}"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.greeter.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.http.execution_arn}/*/*"
+}
