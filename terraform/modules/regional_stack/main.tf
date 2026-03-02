@@ -324,7 +324,7 @@ resource "aws_ecs_task_definition" "publisher" {
       ]
 
       entryPoint = ["sh", "-lc"]
-      command    = [
+      command = [
         "PAYLOAD=$(printf '{\"email\":\"%s\",\"source\":\"ECS\",\"region\":\"%s\",\"repo\":\"%s\"}' \"$EMAIL\" \"$REGION\" \"$REPO_URL\"); echo $PAYLOAD; aws sns publish --region us-east-1 --topic-arn \"$SNS_ARN\" --message \"$PAYLOAD\"; echo done"
       ]
 
@@ -338,4 +338,154 @@ resource "aws_ecs_task_definition" "publisher" {
       }
     }
   ])
+}
+
+# -------- Dispatcher Lambda (runs ECS task) --------
+data "aws_iam_policy_document" "dispatcher_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["lambda.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "dispatcher_role" {
+  name               = "${var.project_name}-dispatcher-${var.region}"
+  assume_role_policy = data.aws_iam_policy_document.dispatcher_assume.json
+}
+
+resource "aws_iam_role_policy_attachment" "dispatcher_basic" {
+  role       = aws_iam_role.dispatcher_role.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+data "aws_iam_policy_document" "dispatcher_policy" {
+  statement {
+    actions = [
+      "ecs:RunTask",
+      "ecs:DescribeTasks"
+    ]
+    resources = [
+      aws_ecs_task_definition.publisher.arn
+    ]
+  }
+
+  statement {
+    actions = ["ecs:RunTask"]
+    resources = [
+      aws_ecs_cluster.this.arn
+    ]
+  }
+
+  # Lambda must be allowed to pass the ECS roles to the task
+  statement {
+    actions = ["iam:PassRole"]
+    resources = [
+      aws_iam_role.ecs_execution_role.arn,
+      aws_iam_role.ecs_task_role.arn
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "dispatcher_inline" {
+  name   = "${var.project_name}-dispatcher-inline-${var.region}"
+  role   = aws_iam_role.dispatcher_role.id
+  policy = data.aws_iam_policy_document.dispatcher_policy.json
+}
+
+data "archive_file" "dispatcher_zip" {
+  type        = "zip"
+  output_path = "${path.module}/dispatcher.zip"
+
+  source {
+    filename = "lambda_function.py"
+    content  = <<-PY
+import json, os
+import boto3
+
+ecs = boto3.client("ecs")
+
+CLUSTER_ARN = os.environ["CLUSTER_ARN"]
+TASK_DEF_ARN = os.environ["TASK_DEF_ARN"]
+SUBNET_ID = os.environ["SUBNET_ID"]
+SG_ID = os.environ["SG_ID"]
+
+def handler(event, context):
+    resp = ecs.run_task(
+        cluster=CLUSTER_ARN,
+        launchType="FARGATE",
+        taskDefinition=TASK_DEF_ARN,
+        networkConfiguration={
+            "awsvpcConfiguration": {
+                "subnets": [SUBNET_ID],
+                "securityGroups": [SG_ID],
+                "assignPublicIp": "ENABLED"
+            }
+        }
+    )
+
+    failures = resp.get("failures", [])
+    if failures:
+        return {
+            "statusCode": 500,
+            "headers": {"content-type": "application/json"},
+            "body": json.dumps({"ok": False, "failures": failures})
+        }
+
+    task_arns = [t["taskArn"] for t in resp.get("tasks", [])]
+    return {
+        "statusCode": 200,
+        "headers": {"content-type": "application/json"},
+        "body": json.dumps({"ok": True, "tasks": task_arns})
+    }
+PY
+  }
+}
+
+resource "aws_lambda_function" "dispatcher" {
+  function_name = "${var.project_name}-dispatcher-${var.region}"
+  role          = aws_iam_role.dispatcher_role.arn
+  handler       = "lambda_function.handler"
+  runtime       = "python3.12"
+  timeout       = 20
+  memory_size   = 128
+
+  filename         = data.archive_file.dispatcher_zip.output_path
+  source_code_hash = data.archive_file.dispatcher_zip.output_base64sha256
+
+  environment {
+    variables = {
+      CLUSTER_ARN  = aws_ecs_cluster.this.arn
+      TASK_DEF_ARN = aws_ecs_task_definition.publisher.arn
+      SUBNET_ID    = aws_subnet.public.id
+      SG_ID        = aws_security_group.ecs_tasks.id
+    }
+  }
+}
+
+# Integration for /dispatch -> dispatcher lambda
+resource "aws_apigatewayv2_integration" "dispatch_lambda" {
+  api_id                 = aws_apigatewayv2_api.http.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.dispatcher.arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "dispatch" {
+  api_id    = aws_apigatewayv2_api.http.id
+  route_key = "POST /dispatch"
+  target    = "integrations/${aws_apigatewayv2_integration.dispatch_lambda.id}"
+
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito_jwt.id
+}
+
+resource "aws_lambda_permission" "allow_apigw_dispatch" {
+  statement_id  = "AllowExecutionFromAPIGatewayDispatch-${var.region}"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.dispatcher.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.http.execution_arn}/*/*"
 }
