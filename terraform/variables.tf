@@ -8,3 +8,14 @@ variable "project_name" {
   type        = string
   default     = "unleash-assessment"
 }
+
+variable "repo_url" {
+  description = "GitHub repo URL used in SNS verification payloads."
+  type        = string
+}
+
+variable "regions" {
+  description = "Regions to deploy the regional stack into."
+  type        = list(string)
+  default     = ["us-east-1", "eu-west-1"]
+}

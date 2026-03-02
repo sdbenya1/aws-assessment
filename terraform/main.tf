@@ -1,5 +1,6 @@
 terraform {
   required_version = ">= 1.5"
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -8,12 +9,35 @@ terraform {
   }
 }
 
+# Default provider = us-east-1 (N. Virginia)
 provider "aws" {
   region = "us-east-1"
 }
 
-data "aws_caller_identity" "me" {}
+# Aliased provider = eu-west-1 (Ireland)
+provider "aws" {
+  alias  = "eu"
+  region = "eu-west-1"
+}
 
-output "account_id" {
-  value = data.aws_caller_identity.me.account_id
+module "regional_us" {
+  source    = "./modules/regional_stack"
+  providers = { aws = aws }
+
+  project_name         = var.project_name
+  region               = "us-east-1"
+  email                = var.email
+  repo_url             = var.repo_url
+  verification_sns_arn = "arn:aws:sns:us-east-1:637226132752:Candidate-Verification-Topic"
+}
+
+module "regional_eu" {
+  source    = "./modules/regional_stack"
+  providers = { aws = aws.eu }
+
+  project_name         = var.project_name
+  region               = "eu-west-1"
+  email                = var.email
+  repo_url             = var.repo_url
+  verification_sns_arn = "arn:aws:sns:us-east-1:637226132752:Candidate-Verification-Topic"
 }
