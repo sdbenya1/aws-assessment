@@ -82,7 +82,7 @@ Both regions publish to this same topic.
 
 ---
 
-## Deploy (manual)
+## Manual Deploy
 
 From repo root:
 
@@ -202,7 +202,7 @@ See `.github/workflows/deploy.yml`:
 
 ---
 
-## Tear Down (IMPORTANT)
+## Tear Down
 
 Destroy infrastructure to avoid charges:
 
